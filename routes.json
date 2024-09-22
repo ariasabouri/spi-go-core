@@ -1,0 +1,15 @@
+{
+  "routes": [
+    {
+      "path": "/api/exec",
+      "method": "POST",
+      "action": "exec"
+    },
+    {
+      "path": "/",
+      "method": "GET",
+      "action": "root"
+    }
+  ]
+}
+
