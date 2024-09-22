@@ -7,49 +7,37 @@ import (
 	"spi-go-core/handlers"
 )
 
+// Router holds the configuration and routing logic
 type Router struct {
-	Config *config.Config
+	Config config.AppConfig
 }
 
-// NewRouter creates a new instance of Router
-func NewRouter() *Router {
-	cfg, err := config.LoadConfig("routes.json")
-	if err != nil {
-		log.Fatalf("Failed to load route configuration: %v", err)
-	}
-
+// NewRouter creates a new Router and loads the configuration
+func NewRouter(cfg *config.AppConfig) *Router {
 	return &Router{
-		Config: cfg,
+		Config: *cfg,
 	}
 }
 
-// RegisterRoutes registers all the routes from the configuration
+// RegisterRoutes registers all routes dynamically based on the configuration
 func (r *Router) RegisterRoutes() {
-	for _, route := range r.Config.Routes {
-		handler := r.getHandler(route.Action)
+	handlers.RegisterHandlers() // Register all handlers
 
-		// Route based on method (GET, POST)
+	for _, route := range r.Config.Routes {
+		handlerFunc, exists := handlers.FunctionMap[route.Action]
+		if !exists {
+			log.Printf("Handler function for action %s not found", route.Action)
+			continue
+		}
+
+		// Register the route
 		switch route.Method {
 		case "GET":
-			http.HandleFunc(route.Path, handler)
+			http.HandleFunc(route.Path, handlerFunc)
 		case "POST":
-			http.HandleFunc(route.Path, handler)
+			http.HandleFunc(route.Path, handlerFunc)
 		default:
 			log.Printf("Unsupported HTTP method %s for path %s", route.Method, route.Path)
-		}
-	}
-}
-
-// getHandler returns the appropriate handler function for the action
-func (r *Router) getHandler(action string) http.HandlerFunc {
-	switch action {
-	case "exec":
-		return handlers.HandleExecCommand
-	case "root":
-		return handlers.HandleRoot
-	default:
-		return func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "Unknown action", http.StatusNotFound)
 		}
 	}
 }

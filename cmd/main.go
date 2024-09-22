@@ -1,40 +1,62 @@
+// In main.go
 package main
 
 import (
 	"crypto/tls"
 	"log"
 	"net/http"
-
+	"spi-go-core/config"
+	"spi-go-core/handlers"
 	"spi-go-core/routes"
 )
 
 func main() {
-	// Load server certificate and private key
-	cert, err := tls.LoadX509KeyPair("certs/server.crt", "certs/server.key")
+	// Load the configuration file
+	cfg, err := config.LoadAppConfig("config.json")
 	if err != nil {
-		log.Fatalf("Failed to load server certificates: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Set up TLS config
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+	// Check if encryption is enabled or disabled
+	if cfg.EncryptionConfig.Enabled {
+		log.Println("Encryption is enabled.")
+		// Add your encryption logic here
+	} else {
+		log.Println("Encryption is disabled for testing purposes.")
+		// Skip encryption for testing purposes
 	}
 
-	// Register the routes dynamically (routes package handles this)
-	router := routes.NewRouter()
+	// Set allowed commands in handlers
+	handlers.SetAllowedCommands(cfg.Commands.Allowed)
+
+	// Register the routes
+	router := routes.NewRouter(cfg)
 	router.RegisterRoutes()
 
-	// Define the HTTPS server
+	// Server configuration based on TLS settings
 	server := &http.Server{
-		Addr:      ":8443",
-		TLSConfig: tlsConfig,
-		Handler:   nil, // Uses the default HTTP handler
+		Addr:    ":8443",
+		Handler: nil, // Uses the default HTTP handler
 	}
 
-	// Start the HTTPS server
-	log.Println("Starting secure server on https://localhost:8443")
-	err = server.ListenAndServeTLS("", "")
+	if cfg.Server.TLSEnabled {
+		// Load server certificate and private key for TLS
+		cert, err := tls.LoadX509KeyPair(cfg.Server.CertFile, cfg.Server.KeyFile)
+		if err != nil {
+			log.Fatalf("Failed to load server certificates: %v", err)
+		}
+
+		// Start HTTPS server with TLS
+		server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+		log.Println("Starting secure server on https://localhost:", cfg.Server.Port)
+		err = server.ListenAndServeTLS("", "")
+	} else {
+		// Start HTTP server without TLS
+		log.Println("Starting server on http://localhost:", cfg.Server.Port)
+		err = server.ListenAndServe()
+	}
+
 	if err != nil {
-		log.Fatalf("Failed to start HTTPS server: %v", err)
+		log.Fatalf("Failed to start server: %v", err)
 	}
 }

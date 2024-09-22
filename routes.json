@@ -3,13 +3,12 @@
     {
       "path": "/api/exec",
       "method": "POST",
-      "action": "exec"
+      "action": "HandleExecCommand"
     },
     {
       "path": "/",
       "method": "GET",
-      "action": "root"
+      "action": "HandleRoot"
     }
   ]
 }
-

@@ -1,0 +1,28 @@
+{
+  "server": {
+    "port": 8443,
+    "tls_enabled": true,
+    "tls_cert_file": "certs/server.crt",
+    "tls_key_file": "certs/server.key"
+  },
+  "routes": [
+    {
+      "path": "/api/exec",
+      "method": "POST",
+      "handler": "exec",
+      "action": "HandleExecCommand"
+    },
+    {
+      "path": "/",
+      "method": "GET",
+      "handler": "exec",
+      "action": "HandleRoot"
+    }
+  ],
+  "commands": {
+    "allowed": ["ls", "pwd", "whoami", "df"]
+  },
+  "encryption": {
+    "enabled": false
+  }
+}
