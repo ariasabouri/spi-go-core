@@ -18,26 +18,27 @@ type CommandConfig struct {
 	Allowed []string `json:"allowed"`
 }
 
-type Route struct {
-	Path    string `json:"path"`
-	Method  string `json:"method"`
-	Handler string `json:"handler"`
-	Action  string `json:"action"`
-}
-
 type UI struct {
 	Enabled bool `json:"enabled"`
 }
 
+type Logging struct {
+	Verbosity string `json:"normal"`
+}
+
+type EncryptionConfig struct {
+	Enabled    bool   `json:"enabled"`
+	PublicKey  string `json:"public_key"`
+	PrivateKey string `json:"private_key"`
+}
+
 // AppConfig holds the full application configuration
 type AppConfig struct {
-	Server           ServerConfig  `json:"server"`
-	Commands         CommandConfig `json:"commands"`
-	Routes           []Route       `json:"routes"`
-	UI               UI            `json:"UI"`
-	EncryptionConfig struct {
-		Enabled bool `json:"enabled"` // Add this field to toggle encryption
-	} `json:"encryption"`
+	Server     ServerConfig  `json:"server"`
+	Commands   CommandConfig `json:"commands"`
+	UI         UI            `json:"UI"`
+	Logging    Logging
+	Encryption EncryptionConfig `json:"encryption"`
 }
 
 var GlobalConfig *AppConfig
@@ -52,11 +53,12 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 
 	decoder := json.NewDecoder(file)
 	config := &AppConfig{}
-	GlobalConfig = &AppConfig{}
 	err = decoder.Decode(config)
 	if err != nil {
 		return nil, err
 	}
+
+	GlobalConfig = config
 
 	return config, nil
 }

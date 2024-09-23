@@ -12,25 +12,89 @@ import (
 	"strings"
 )
 
-// EnvironmentSetupHandler prepares the server environment, including Node.js installation based on the distribution
-func EnvironmentSetupHandler(w http.ResponseWriter, r *http.Request) {
-	// Step 1: Detect the distribution
-	distro, err := detectDistro()
+func handleSetup(w http.ResponseWriter, r *http.Request) {
+	logFile, err := os.OpenFile("install.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to detect distribution: %v", err), http.StatusInternalServerError)
-		return
+		log.Fatalf("Failed to create log file: %v", err)
 	}
-	log.Printf("Detected distribution: %s", distro)
+	defer logFile.Close()
+	EnvironmentSetupHandler(logFile)
+}
 
-	// Step 2: Install Node.js based on the distribution
-	err = installNode(distro)
+// EnvironmentSetupHandler handles the environment setup tasks with filtered UI output and full terminal logging
+func EnvironmentSetupHandler(logFile *os.File) error {
+	// Example subprocess (install Node.js)
+	cmd := exec.Command("bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_16.x | bash - && apt-get install -y nodejs")
+
+	// Capture both stdout and stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Node.js installation failed: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to get stdout pipe: %v", err)
 	}
 
-	// Send success response
-	w.Write([]byte("Environment setup completed successfully, Node.js installed."))
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %v", err)
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %v", err)
+	}
+
+	// Log stdout and stderr to terminal and file (all messages)
+	go logOutput(stdout, os.Stdout, logFile)
+	go logOutput(stderr, os.Stdout, logFile)
+
+	// Also capture relevant messages for UI display (errors, warnings, and key updates)
+	go captureRelevantOutput(stdout, "stdout")
+	go captureRelevantOutput(stderr, "stderr")
+
+	// Wait for the command to complete
+	if err := cmd.Wait(); err != nil {
+		log.Printf("Error: Command execution failed: %v", err)
+		fmt.Fprintf(logFile, "Error: Command execution failed: %v\n", err)
+		return err
+	}
+
+	log.Println("Node.js installation completed successfully.")
+	fmt.Fprintln(logFile, "Node.js installation completed successfully.")
+	return nil
+}
+
+// logOutput logs the output from a pipe to both the terminal and the log file (full logging)
+func logOutput(pipe io.ReadCloser, terminalOutput io.Writer, logFile *os.File) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Log everything to the terminal and log file
+		fmt.Fprintln(terminalOutput, line)
+		fmt.Fprintln(logFile, line)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(logFile, "[Error] Failed to read pipe: %v\n", err)
+	}
+}
+
+// captureRelevantOutput filters relevant messages (errors, warnings, key progress) for UI display
+func captureRelevantOutput(pipe io.ReadCloser, pipeType string) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Show only relevant messages (errors, warnings, or important messages)
+		if strings.Contains(strings.ToLower(line), "error") ||
+			strings.Contains(strings.ToLower(line), "warning") ||
+			strings.Contains(strings.ToLower(line), "done") ||
+			strings.Contains(strings.ToLower(line), "progress") {
+
+			// Display relevant lines in the UI (or store for UI display)
+			log.Printf("[%s] %s", pipeType, line) // Placeholder for where UI would be used
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("[Error] Failed to read pipe for UI: %v", err)
+	}
 }
 
 // detectDistro detects the Linux distribution by reading /etc/os-release

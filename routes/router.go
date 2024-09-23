@@ -1,43 +1,31 @@
+// routes/router.go
+
 package routes
 
 import (
-	"log"
 	"net/http"
 	"spi-go-core/handlers"
-	"spi-go-core/internal/config"
+	"spi-go-core/middlewares"
 )
 
-// Router holds the configuration and routing logic
-type Router struct {
-	Config config.AppConfig
+// Router holds the routing logic
+type Router struct{}
+
+// NewRouter creates a new Router
+func NewRouter() *Router {
+	return &Router{}
 }
 
-// NewRouter creates a new Router and loads the configuration
-func NewRouter(cfg *config.AppConfig) *Router {
-	return &Router{
-		Config: *cfg,
-	}
-}
-
-// RegisterRoutes registers all routes dynamically based on the configuration
+// RegisterRoutes registers routes directly with the necessary handlers and middleware
 func (r *Router) RegisterRoutes() {
-	handlers.RegisterHandlers() // Register all handlers
+	// Handshake routes
+	http.HandleFunc("/api/key-exchange", middlewares.OutputMiddleware(handlers.HandleKeyExchange))
+	http.HandleFunc("/api/verify-message", middlewares.OutputMiddleware(middlewares.ValidateConnection(handlers.HandleMessageVerification)))
+	http.HandleFunc("/api/handshake-success", middlewares.OutputMiddleware(middlewares.ValidateConnection(handlers.HandleSuccess)))
 
-	for _, route := range r.Config.Routes {
-		handlerFunc, exists := handlers.FunctionMap[route.Action]
-		if !exists {
-			log.Printf("Handler function for action %s not found", route.Action)
-			continue
-		}
+	// Protected routes (Require validated connection)
+	http.HandleFunc("/api/exec", middlewares.OutputMiddleware(middlewares.ValidateConnection(handlers.HandleExecCommand)))
 
-		// Register the route
-		switch route.Method {
-		case "GET":
-			http.HandleFunc(route.Path, handlerFunc)
-		case "POST":
-			http.HandleFunc(route.Path, handlerFunc)
-		default:
-			log.Printf("Unsupported HTTP method %s for path %s", route.Method, route.Path)
-		}
-	}
+	// Root route
+	http.HandleFunc("/", middlewares.OutputMiddleware(handlers.HandleRoot))
 }

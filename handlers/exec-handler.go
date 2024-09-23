@@ -57,7 +57,7 @@ func HandleExecCommand(w http.ResponseWriter, r *http.Request) {
 
 	// Check if encryption is enabled in the config
 	var commandStr string
-	if config.GlobalConfig.EncryptionConfig.Enabled {
+	if config.GlobalConfig.Encryption.Enabled {
 		// Handle encryption if enabled (not shown here for simplicity)
 	} else {
 		// If encryption is not enabled, use the command as is

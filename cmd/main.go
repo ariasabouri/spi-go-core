@@ -2,16 +2,68 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/tls"
+	_ "embed"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"spi-go-core/handlers"
 	"spi-go-core/internal/config"
+	"spi-go-core/internal/ui"
 	"spi-go-core/routes"
-	"spi-go-core/ui"
 )
+
+// go:embed embedded/typescript-app.tar.gz
+var tsAppCompressed []byte
+
+// Extracts the TypeScript project to a temporary directory
+func extractTSApp() (string, error) {
+	tempDir, err := os.MkdirTemp("", "typescript-app")
+	if err != nil {
+		return "", err
+	}
+
+	gzipReader, err := gzip.NewReader(bytes.NewReader(tsAppCompressed))
+	if err != nil {
+		return "", err
+	}
+	defer gzipReader.Close()
+
+	tarReader := tar.NewReader(gzipReader)
+	for {
+		header, err := tarReader.Next()
+		if err != nil {
+			break
+		}
+
+		filePath := filepath.Join(tempDir, header.Name)
+		if header.Typeflag == tar.TypeDir {
+			os.MkdirAll(filePath, 0755)
+		} else if header.Typeflag == tar.TypeReg {
+			file, err := os.Create(filePath)
+			if err != nil {
+				return "", err
+			}
+			_, err = ioutil.ReadAll(tarReader)
+			file.Close()
+		}
+	}
+	return tempDir, nil
+}
+
+// Runs the TypeScript project as a subprocess
+func runTSApp(tsAppDir string) error {
+	cmd := exec.Command("node", filepath.Join(tsAppDir, "dist/index.js"))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
 
 func main() {
 	// Load the configuration file
@@ -31,6 +83,10 @@ func main() {
 	cfg, err := config.LoadAppConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	} else {
+		log.Printf("Loaded configuration from %s", configPath)
+		log.Printf("Private key: %s", config.GlobalConfig.Encryption.PrivateKey)
+		log.Printf("Public key: %s", config.GlobalConfig.Encryption.PublicKey)
 	}
 
 	// Start the UI when setting up the environment
@@ -40,7 +96,7 @@ func main() {
 	}
 
 	// Check if encryption is enabled or disabled
-	if cfg.EncryptionConfig.Enabled {
+	if cfg.Encryption.Enabled {
 		log.Println("Encryption is enabled.")
 		// Add your encryption logic here
 	} else {
@@ -52,7 +108,7 @@ func main() {
 	handlers.SetAllowedCommands(cfg.Commands.Allowed)
 
 	// Register the routes
-	router := routes.NewRouter(cfg)
+	router := routes.NewRouter()
 	router.RegisterRoutes()
 
 	// Server configuration based on TLS settings
@@ -81,4 +137,34 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+
+	// Log file for environment setup
+	logFile, err := os.OpenFile("install.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Failed to create log file: %v", err)
+	}
+	defer logFile.Close()
+
+	// Step 1: Install Node.js using EnvironmentSetupHandler
+	log.Println("Starting environment setup...")
+	err = handlers.EnvironmentSetupHandler(logFile)
+	if err != nil {
+		log.Fatalf("Environment setup failed: %v", err)
+	}
+
+	// Step 2: Extract the TypeScript app
+	log.Println("Extracting TypeScript app...")
+	tsAppDir, err := extractTSApp()
+	if err != nil {
+		log.Fatalf("Failed to extract TypeScript app: %v", err)
+	}
+
+	// Step 3: Run the TypeScript app as a subprocess
+	log.Println("Running TypeScript app...")
+	err = runTSApp(tsAppDir)
+	if err != nil {
+		log.Fatalf("Failed to run TypeScript app: %v", err)
+	}
+
+	log.Println("Process completed successfully.")
 }

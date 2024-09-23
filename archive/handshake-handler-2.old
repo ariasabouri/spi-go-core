@@ -1,0 +1,386 @@
+package handlers
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"spi-go-core/helpers"
+	"spi-go-core/internal/config"
+	"sync"
+	"time"
+)
+
+// Struct to hold temporary data for request ID and public keys
+type ConnectionData struct {
+	PublicKey *rsa.PublicKey
+	Timestamp time.Time
+}
+
+var connectionMap = make(map[string]ConnectionData)
+var connectionLock sync.Mutex
+
+type KeyExchangeRequest struct {
+	TSAppPublicKey string `json:"tsAppPublicKey"`
+}
+
+type KeyExchangeResponse struct {
+	GoCorePublicKey string `json:"goCorePublicKey"`
+}
+
+type HandshakeRequest struct {
+	TSAppPublicKey string `json:"tsAppPublicKey"`
+}
+
+type HandshakeResponse struct {
+	GoCorePublicKey  string `json:"goCorePublicKey"`
+	EncryptedMessage string `json:"encryptedMessage"`
+}
+
+type VerificationRequest struct {
+	EncryptedResponse string `json:"encryptedResponse"`
+}
+
+var TsAppPublicKey *rsa.PublicKey // Store the TS app public key globally
+var ConnectionValidated = false   // To track if the connection is secure
+
+// Load Go core private and public keys
+func loadGoKeys() (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	log.Printf(`Trying to read private key in %s...`, config.GlobalConfig.Encryption.PrivateKey)
+	pathPrivateKey, _ := helpers.ResolvePath(config.GlobalConfig.Encryption.PrivateKey)
+	log.Printf(`Resolving path %s...`, pathPrivateKey)
+	privateKeyFile, err := os.ReadFile(pathPrivateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	block, _ := pem.Decode(privateKeyFile)
+	if block == nil {
+		log.Println("Failed to decode private key PEM block")
+		return nil, nil, errors.New("failed to decode private key PEM block")
+	}
+	privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Printf(`Succesfully read private key.`)
+
+	log.Println(`Trying to read public key...`)
+	publicKeyFile, err := os.ReadFile(config.GlobalConfig.Encryption.PublicKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	blockPub, _ := pem.Decode(publicKeyFile)
+	publicKey, err := x509.ParsePKIXPublicKey(blockPub.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Printf(`Succesfully read public key.`)
+
+	return privateKey.(*rsa.PrivateKey), publicKey.(*rsa.PublicKey), nil
+}
+
+// loadTsAppPublicKey retrieves the stored TypeScript app's public key
+func loadTsAppPublicKey() (*rsa.PublicKey, error) {
+	if TsAppPublicKey == nil {
+		return nil, fmt.Errorf("TypeScript app public key not found")
+	}
+	return TsAppPublicKey, nil
+}
+
+// HandleKeyExchange handles the initial public key exchange and returns a session ID
+func HandleKeyExchange(w http.ResponseWriter, r *http.Request) {
+	log.Println("Received request for key exchange")
+	var req KeyExchangeRequest
+
+	// Parse the TypeScript app's public key
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		helpers.JSONError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Store the TypeScript app's public key (for later use in encryption)
+	tsAppPublicKeyPEM := req.TSAppPublicKey
+	log.Printf("Received TypeScript app public key: %s", tsAppPublicKeyPEM)
+
+	block, _ := pem.Decode([]byte(tsAppPublicKeyPEM))
+	tsAppPublicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		helpers.JSONError(w, "Failed to parse TypeScript app public key", http.StatusBadRequest)
+		return
+	}
+
+	TsAppPublicKey = tsAppPublicKey.(*rsa.PublicKey)
+
+	// Generate a session ID (UUID-like or random string)
+	sessionID := GenerateReqId()
+
+	// Store the session and the TypeScript app public key in the connection map
+	connectionLock.Lock()
+	connectionMap[sessionID] = ConnectionData{
+		PublicKey: tsAppPublicKey.(*rsa.PublicKey),
+		Timestamp: time.Now(),
+	}
+	connectionLock.Unlock()
+
+	// Load Go core's public key
+	_, goPublicKey, err := loadGoKeys()
+	if err != nil {
+		helpers.JSONError(w, fmt.Sprintf("Failed to load Go public key: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Marshal the Go core public key into the X.509 SPKI format
+	goPublicKeyBytes, err := x509.MarshalPKIXPublicKey(goPublicKey)
+	if err != nil {
+		helpers.JSONError(w, "Failed to marshal Go core public key", http.StatusInternalServerError)
+		return
+	}
+
+	// Encode the public key into PEM format
+	goCorePublicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: goPublicKeyBytes,
+	})
+
+	// Prepare the response containing Go core's public key and session ID
+	response := KeyExchangeResponse{
+		GoCorePublicKey: string(goCorePublicKeyPEM),
+	}
+	w.Header().Set("X-Request-ID", sessionID)
+
+	// Send the response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Println("Error sending response:", err)
+		return
+	}
+
+	log.Printf("Successfully completed key exchange with session ID: %s", sessionID)
+}
+
+// Generate a request ID (UUID-like or random string)
+func GenerateReqId() string {
+	requestIDBytes := make([]byte, 16)
+	_, err := rand.Read(requestIDBytes)
+	if err != nil {
+		panic("Failed to generate request ID")
+	}
+	requestID := base64.URLEncoding.EncodeToString(requestIDBytes)
+	return requestID
+}
+
+// HandleHandshake handles the handshake process initiated by the TypeScript app
+func HandleHandshake(w http.ResponseWriter, r *http.Request) {
+	var req HandshakeRequest
+
+	// Parse the request from the TypeScript app, which includes the public key
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		helpers.JSONError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Parse the public key sent by the TypeScript app
+	block, _ := pem.Decode([]byte(req.TSAppPublicKey))
+	tsAppPublicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		helpers.JSONError(w, "Failed to parse TypeScript app public key", http.StatusBadRequest)
+		return
+	}
+
+	// Store the TypeScript app public key globally for later use
+	TsAppPublicKey = tsAppPublicKey.(*rsa.PublicKey)
+
+	// Load Go core's private and public keys
+	_, goPublicKey, err := loadGoKeys()
+	if err != nil {
+		helpers.JSONError(w, "Failed to load Go keys", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate a random string to encrypt
+	randomString := make([]byte, 32)
+	_, err = rand.Read(randomString)
+	if err != nil {
+		helpers.JSONError(w, "Failed to generate random string", http.StatusInternalServerError)
+		return
+	}
+
+	// Encrypt the random string with the TypeScript app's public key
+	encryptedMessage, err := rsa.EncryptPKCS1v15(rand.Reader, TsAppPublicKey, randomString)
+	if err != nil {
+		helpers.JSONError(w, "Failed to encrypt message", http.StatusInternalServerError)
+		return
+	}
+
+	// Send Go core's public key and encrypted message back to the TypeScript app
+	goCorePublicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: x509.MarshalPKCS1PublicKey(goPublicKey),
+	})
+
+	response := HandshakeResponse{
+		GoCorePublicKey:  string(goCorePublicKeyPEM),
+		EncryptedMessage: base64.StdEncoding.EncodeToString(encryptedMessage),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Println("Handshake initiated by TypeScript app and response sent")
+}
+
+// VerifyResponse verifies the re-encrypted response from the TypeScript app
+func VerifyResponse(w http.ResponseWriter, r *http.Request) {
+	var req VerificationRequest
+
+	// Parse the verification request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		helpers.JSONError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Load Go core's private key to decrypt the message
+	goPrivateKey, _, err := loadGoKeys()
+	if err != nil {
+		helpers.JSONError(w, "Failed to load Go private key", http.StatusInternalServerError)
+		return
+	}
+
+	// Decode and decrypt the response from the TypeScript app
+	encryptedResponse, err := base64.StdEncoding.DecodeString(req.EncryptedResponse)
+	if err != nil {
+		helpers.JSONError(w, "Failed to decode response", http.StatusBadRequest)
+		return
+	}
+
+	decryptedResponse, err := rsa.DecryptPKCS1v15(rand.Reader, goPrivateKey, encryptedResponse)
+	if err != nil {
+		helpers.JSONError(w, "Failed to decrypt response", http.StatusInternalServerError)
+		return
+	}
+
+	// Log and verify the decrypted response
+	log.Printf("Decrypted response: %s", base64.StdEncoding.EncodeToString(decryptedResponse))
+
+	// Verify that the decrypted response matches the original random string
+	// (Store the original random string from the handshake and compare it here)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Verification successful"))
+}
+
+// After keys are exchanged
+func SendEncryptedMessage(w http.ResponseWriter, r *http.Request) {
+	// Load the TypeScript app's public key (from previous key exchange)
+	tsAppPublicKey, err := loadTsAppPublicKey()
+	if err != nil {
+		helpers.JSONError(w, "Failed to load TypeScript app public key", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate a random string to encrypt
+	randomString := make([]byte, 32)
+	_, err = rand.Read(randomString)
+	if err != nil {
+		helpers.JSONError(w, "Failed to generate random string", http.StatusInternalServerError)
+		return
+	}
+
+	// Encrypt the random string using the TypeScript app's public key
+	encryptedMessage, err := rsa.EncryptPKCS1v15(rand.Reader, tsAppPublicKey, randomString)
+	if err != nil {
+		helpers.JSONError(w, "Failed to encrypt message", http.StatusInternalServerError)
+		return
+	}
+
+	// Send the encrypted message to the TypeScript app
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(encryptedMessage)
+}
+
+// HandleMessageVerification handles the decrypted message from TS app and re-encrypts it
+func HandleMessageVerification(w http.ResponseWriter, r *http.Request) {
+	// Load the TypeScript app's public key (from previous key exchange)
+	tsAppPublicKey, err := loadTsAppPublicKey()
+	if err != nil {
+		helpers.JSONError(w, "Failed to load TypeScript app public key", http.StatusInternalServerError)
+		return
+	}
+
+	// Load Go core's private key
+	goPrivateKey, _, err := loadGoKeys()
+	if err != nil {
+		helpers.JSONError(w, "Failed to load Go private key", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse and decode the encrypted message from the TS app
+	var req VerificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		helpers.JSONError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	encryptedMessage, err := base64.StdEncoding.DecodeString(req.EncryptedResponse)
+	if err != nil {
+		helpers.JSONError(w, "Failed to decode message", http.StatusBadRequest)
+		return
+	}
+
+	// Decrypt the message with Go core's private key
+	decryptedMessage, err := rsa.DecryptPKCS1v15(rand.Reader, goPrivateKey, encryptedMessage)
+	if err != nil {
+		helpers.JSONError(w, "Failed to decrypt message", http.StatusInternalServerError)
+		return
+	}
+
+	// Re-encrypt the message using TypeScript app's public key
+	reEncryptedMessage, err := rsa.EncryptPKCS1v15(rand.Reader, tsAppPublicKey, decryptedMessage)
+	if err != nil {
+		helpers.JSONError(w, "Failed to encrypt message with TypeScript app's public key", http.StatusInternalServerError)
+		return
+	}
+
+	// Send the re-encrypted message back to the TypeScript app
+	w.Header().Set("Content-Type", "application/json")
+	response := VerificationRequest{
+		EncryptedResponse: base64.StdEncoding.EncodeToString(reEncryptedMessage),
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleSuccess handles the final confirmation from the TypeScript app that the handshake was successful
+func HandleSuccess(w http.ResponseWriter, r *http.Request) {
+	// Connection validated
+	ConnectionValidated = true
+	log.Println("Connection successfully validated with the TypeScript app.")
+
+	// Respond to the TypeScript app
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Connection is secure and validated"))
+}
+
+// Function to check if a connection is validated for a given request ID
+func IsConnectionValidated(requestID string) bool {
+	connectionLock.Lock()
+	defer connectionLock.Unlock()
+
+	connData, exists := connectionMap[requestID]
+	if !exists {
+		return false
+	}
+
+	// Add expiration logic if needed (e.g., 5 minutes)
+	if time.Since(connData.Timestamp) > 5*time.Minute {
+		delete(connectionMap, requestID)
+		return false
+	}
+
+	return true
+}
