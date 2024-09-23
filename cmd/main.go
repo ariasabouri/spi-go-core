@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"spi-go-core/config"
 	"spi-go-core/handlers"
+	"spi-go-core/internal/config"
 	"spi-go-core/routes"
+	"spi-go-core/ui"
 )
 
 func main() {
@@ -30,6 +31,12 @@ func main() {
 	cfg, err := config.LoadAppConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Start the UI when setting up the environment
+	if cfg.UI.Enabled {
+		log.Println("Starting UI..")
+		ui.StartUI()
 	}
 
 	// Check if encryption is enabled or disabled

@@ -1,0 +1,141 @@
+package handlers
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"spi-go-core/internal/config"
+	"strings"
+)
+
+// EnvironmentSetupHandler prepares the server environment, including Node.js installation based on the distribution
+func EnvironmentSetupHandler(w http.ResponseWriter, r *http.Request) {
+	// Step 1: Detect the distribution
+	distro, err := detectDistro()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to detect distribution: %v", err), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Detected distribution: %s", distro)
+
+	// Step 2: Install Node.js based on the distribution
+	err = installNode(distro)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Node.js installation failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Send success response
+	w.Write([]byte("Environment setup completed successfully, Node.js installed."))
+}
+
+// detectDistro detects the Linux distribution by reading /etc/os-release
+func detectDistro() (string, error) {
+	file, err := os.Open("/etc/os-release")
+	if err != nil {
+		return "", fmt.Errorf("failed to open /etc/os-release: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "ID=") {
+			distro := strings.TrimPrefix(line, "ID=")
+			return strings.Trim(distro, "\""), nil
+		}
+	}
+	return "", fmt.Errorf("distribution not found")
+}
+
+// installNode installs Node.js based on the detected distribution and filters output based on verbosity level
+func installNode(distro string) error {
+	var cmd *exec.Cmd
+
+	// Select the right command based on the distribution and add debug/verbose flags if necessary
+	switch distro {
+	case "debian", "ubuntu":
+		// Add --verbose flag if debug is enabled
+		if config.GlobalConfig.Logging.Verbosity == "debug" {
+			cmd = exec.Command("bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_16.x | bash - && apt-get install -y nodejs --verbose")
+		} else {
+			cmd = exec.Command("bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_16.x | bash - && apt-get install -y nodejs")
+		}
+	case "centos", "rhel", "fedora":
+		if config.GlobalConfig.Logging.Verbosity == "debug" {
+			cmd = exec.Command("bash", "-c", "curl -fsSL https://rpm.nodesource.com/setup_16.x | bash - && yum install -y nodejs --verbose")
+		} else {
+			cmd = exec.Command("bash", "-c", "curl -fsSL https://rpm.nodesource.com/setup_16.x | bash - && yum install -y nodejs")
+		}
+	default:
+		return fmt.Errorf("unsupported distribution: %s", distro)
+	}
+
+	// Get pipe to capture the output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %v", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %v", err)
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %v", err)
+	}
+
+	// Filter and log the output based on verbosity level, including debug if set
+	go filterOutput(stdout, "stdout")
+	go filterOutput(stderr, "stderr")
+
+	// Wait for the command to complete
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("command failed: %v", err)
+	}
+
+	log.Println("Node.js installation completed successfully.")
+	return nil
+}
+
+// filterOutput filters and logs output based on verbosity level, including debug
+func filterOutput(pipe io.ReadCloser, pipeType string) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Show more or less based on the verbosity level
+		switch config.GlobalConfig.Logging.Verbosity {
+		case "verbose":
+			// Log everything
+			log.Printf("[%s] %s", pipeType, line)
+
+		case "normal":
+			// Filter for errors, warnings, and important information
+			if strings.Contains(strings.ToLower(line), "error") ||
+				strings.Contains(strings.ToLower(line), "warning") ||
+				strings.Contains(strings.ToLower(line), "done") {
+				log.Printf("[%s] %s", pipeType, line)
+			}
+
+		case "quiet":
+			// Only log errors
+			if strings.Contains(strings.ToLower(line), "error") {
+				log.Printf("[%s] %s", pipeType, line)
+			}
+
+		case "debug":
+			// Log everything and add a "[DEBUG]" tag to all output
+			log.Printf("[DEBUG][%s] %s", pipeType, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("Error reading from %s: %v", pipeType, err)
+	}
+}

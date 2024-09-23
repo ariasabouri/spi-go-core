@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
-	"spi-go-core/config"
+	"spi-go-core/internal/config"
 )
 
 type ExecHandler struct {

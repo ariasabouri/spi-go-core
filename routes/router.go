@@ -3,8 +3,8 @@ package routes
 import (
 	"log"
 	"net/http"
-	"spi-go-core/config"
 	"spi-go-core/handlers"
+	"spi-go-core/internal/config"
 )
 
 // Router holds the configuration and routing logic
