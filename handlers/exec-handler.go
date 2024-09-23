@@ -1,19 +1,22 @@
 package handlers
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"os/exec"
 	"spi-go-core/config"
 )
 
 type ExecHandler struct {
 	Config *config.AppConfig
+}
+
+// CommandResponse represents the structure of the response
+type CommandResponse struct {
+	Output string `json:"output"` // Output of the executed command
+	Error  string `json:"error"`  // Error message, if any
 }
 
 // Global variable for allowed commands
@@ -26,33 +29,39 @@ func SetAllowedCommands(commands []string) {
 	}
 }
 
+// RequestPayload represents the structure of the incoming request for exec
+type RequestPayload struct {
+	Command string `json:"command"`
+}
+
 // HandleExecCommand handles the POST request to execute a command
 func HandleExecCommand(w http.ResponseWriter, r *http.Request) {
-	handler := ExecHandler{}
+	if config.GlobalConfig == nil {
+		http.Error(w, "Unable to read configuration for handler", http.StatusInternalServerError)
+		return
+	}
+
 	// Read the request body
-	encryptedCommand, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Unable to read request body", http.StatusBadRequest)
 		return
 	}
 
-	// Decrypt the command
-	var commandStr string
-	// Check if encryption is enabled in the config
-	if handler.Config.EncryptionConfig.Enabled {
-		commandStr, err = decryptCommand(encryptedCommand)
-		if err != nil {
-			// Handle the error, return or log it as needed
-			http.Error(w, "Failed to decrypt command", http.StatusBadRequest)
-			return
-		}
-	} else {
-		// If encryption is not enabled, use the original command
-		commandStr = string(encryptedCommand)
-	}
-	if err != nil {
-		http.Error(w, "Failed to decrypt command", http.StatusBadRequest)
+	// Parse the JSON payload to extract the command
+	var payload RequestPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
+	}
+
+	// Check if encryption is enabled in the config
+	var commandStr string
+	if config.GlobalConfig.EncryptionConfig.Enabled {
+		// Handle encryption if enabled (not shown here for simplicity)
+	} else {
+		// If encryption is not enabled, use the command as is
+		commandStr = payload.Command
 	}
 
 	// Extract and validate the command
@@ -69,47 +78,12 @@ func HandleExecCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Encode the response as JSON and send it
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+
 	// Send the output back
-	w.Write([]byte(out))
-}
-
-// decryptCommand decrypts the encrypted command using the server's private key
-func decryptCommand(encryptedCommand []byte) (string, error) {
-	// Load the private key
-	privateKey, err := loadPrivateKey("certs/private_key.pem")
-	if err != nil {
-		return "", err
-	}
-
-	// Decrypt the command using the private key
-	decryptedBytes, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedCommand)
-	if err != nil {
-		return "", err
-	}
-
-	return string(decryptedBytes), nil
-}
-
-// loadPrivateKey loads the private RSA key from a file
-func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-	keyData, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decode the PEM block
-	block, _ := pem.Decode(keyData)
-	if block == nil || block.Type != "RSA PRIVATE KEY" {
-		return nil, fmt.Errorf("failed to decode PEM block containing private key")
-	}
-
-	// Parse the private key
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return privateKey, nil
+	//w.Write([]byte(out))
 }
 
 // extractCommand extracts the base command from the input (e.g., "ls -la" -> "ls")
@@ -130,6 +104,16 @@ func isWhitelistedCommand(command string) bool {
 
 // execCommand executes the system command and returns the output or error
 func execCommand(command string) (string, error) {
-	// This is a placeholder. In reality, you'd execute the command and capture its output.
-	return fmt.Sprintf("Executed: %s", command), nil
+	// Execute the command using os/exec
+	output, err := exec.Command("sh", "-c", command).Output()
+
+	// Prepare the response
+	response := CommandResponse{
+		Output: string(output),
+	}
+	if err != nil {
+		response.Error = err.Error()
+	}
+
+	return response.Output, err
 }

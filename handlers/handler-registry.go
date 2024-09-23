@@ -9,7 +9,7 @@ var FunctionMap = map[string]http.HandlerFunc{}
 
 // RegisterHandlers registers the action names to the appropriate handler functions
 func RegisterHandlers() {
-	// Map action names to their corresponding handler functions
+	// Register handler functions explicitly
 	FunctionMap["HandleExecCommand"] = HandleExecCommand
 	FunctionMap["HandleRoot"] = HandleRoot
 }

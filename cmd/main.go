@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"spi-go-core/config"
 	"spi-go-core/handlers"
 	"spi-go-core/routes"
@@ -12,7 +14,20 @@ import (
 
 func main() {
 	// Load the configuration file
-	cfg, err := config.LoadAppConfig("config.json")
+	// Get the absolute path of the root directory
+	rootDir, err := os.Getwd() // Get the current working directory
+	if err != nil {
+		log.Fatalf("Failed to get working directory: %v", err)
+	}
+	// Check if config file exists
+	configPath := filepath.Join(rootDir, "config.json") // Assuming it's in the root directory
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		log.Fatalf("Config file does not exist: %v", err)
+	} else {
+		log.Println("Config file found")
+	}
+
+	cfg, err := config.LoadAppConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}

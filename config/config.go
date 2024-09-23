@@ -35,6 +35,8 @@ type AppConfig struct {
 	} `json:"encryption"`
 }
 
+var GlobalConfig *AppConfig
+
 // LoadAppConfig loads the JSON configuration from a file
 func LoadAppConfig(path string) (*AppConfig, error) {
 	file, err := os.Open(path)
@@ -45,6 +47,7 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 
 	decoder := json.NewDecoder(file)
 	config := &AppConfig{}
+	GlobalConfig = &AppConfig{}
 	err = decoder.Decode(config)
 	if err != nil {
 		return nil, err
