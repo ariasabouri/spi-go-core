@@ -148,6 +148,7 @@ func HandleMessageVerification(w http.ResponseWriter, r *http.Request) {
 		helpers.JSONError(w, "Failed to encrypt own challenge message with TypeScript app's public key", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Requesting final challenge from client. Secret: %s", challengeSecret)
 
 	// Send the re-encrypted message and own challenge back to the TypeScript app
 	w.Header().Set("Content-Type", "application/json")
@@ -217,6 +218,16 @@ func HandleSuccess(w http.ResponseWriter, r *http.Request) {
 	log.Println("Connection successfully validated with the TypeScript app.")
 
 	// Respond to the TypeScript app
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Connection is secure and validated"))
+	w.Header().Set("Content-Type", "application/json")
+
+	response := struct {
+		Msg string `json:"msg"`
+	}{
+		Msg: "handshake successful!",
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Println("Error sending response:", err)
+		return
+	}
 }
